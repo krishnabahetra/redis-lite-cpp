@@ -115,5 +115,3 @@ redis-lite.exe
 **Version 1 Complete**
 
 Current implementation includes core Redis-like commands, persistence, batch operations, numeric operations, and lazy key expiration.
-
-Once you've done this, your Redis Lite project will be in a strong state for your resume and internship applications.
