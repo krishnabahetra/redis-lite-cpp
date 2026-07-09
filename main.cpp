@@ -5,36 +5,54 @@
 #include <vector>
 #include <algorithm>
 #include <fstream>
+#include <chrono>
 using namespace std;
 
 class RedisLite{
     private:
     unordered_map<string,string> key_value;
+    unordered_map<string, long long> expiry;
     public:
     RedisLite() = default;
 
     void SET(const string& key, const string& value) {
         key_value[key] = value;
+        expiry.erase(key);
+    }
+    
+    void CleanupExpiredKeys() {
+        vector<string> keys;
+        for (const auto& it : key_value) {
+            keys.push_back(it.first);
+        }
+        for (const auto& key : keys) {
+            RemoveIfExpired(key);
+        }
     }
 
-    string GET(const string& key) const {
+    string GET(const string& key) {
+        if(RemoveIfExpired(key)) return "Error: Key Not Found";
         if(auto it = key_value.find(key); it != key_value.end())
             return it->second;
         return "Error: Key Not Found";
     }
 
     bool DEL(const string& key) {
+        if(RemoveIfExpired(key)) return false;
         auto it = key_value.find(key); 
         if(it == key_value.end()) return false;
         key_value.erase(it);
+        expiry.erase(key);
         return true;
     }
 
-    bool EXISTS(const string& key) const {
+    bool EXISTS(const string& key) {
+        if(RemoveIfExpired(key)) return false;
         return key_value.find(key) != key_value.end();
     }
 
-    vector<string> KEYS() const {
+    vector<string> KEYS() {
+        CleanupExpiredKeys();
         vector<string> keys;
         for(const auto& it : key_value) {
             keys.push_back(it.first);
@@ -43,11 +61,13 @@ class RedisLite{
         return keys;
     }
 
-    size_t SIZE() const {
+    size_t SIZE() {
+        CleanupExpiredKeys();
         return key_value.size();
     }
     
-    bool SAVE(const string& filename) const {
+    bool SAVE(const string& filename) {
+        CleanupExpiredKeys();
         ofstream file(filename);
         if(!file) {
             return false;
@@ -63,6 +83,7 @@ class RedisLite{
             return false;
         }
         key_value.clear();
+        expiry.clear();
         string line;
         while(getline(file,line)) {
             size_t pos = line.find(':');
@@ -76,6 +97,7 @@ class RedisLite{
         return true;
     }
     bool ChangeBy(const string& key, long long delta, long long& newValue) {
+        RemoveIfExpired(key);
         auto it = key_value.find(key); 
         if(it == key_value.end()) {
             SET(key,to_string(delta));
@@ -111,13 +133,14 @@ class RedisLite{
     
     void MSET(const vector<pair<string, string>>& pairs) {
         for (const auto& [key, value] : pairs) {
-            key_value[key] = value;
+            SET(key,value);
         }
     }
     
-    vector<string> MGET(const vector<string>& keys) const {
+    vector<string> MGET(const vector<string>& keys) {
         vector<string> values;
         for (const auto& key : keys) {
+            RemoveIfExpired(key);
             auto it = key_value.find(key);
     
             if (it != key_value.end())
@@ -126,6 +149,44 @@ class RedisLite{
                 values.push_back("NULL");
         }
         return values;
+    }
+    
+    long long CurrentTime() const {
+        auto now = chrono::system_clock::now();
+        long long seconds =
+            chrono::duration_cast<chrono::seconds>(
+                now.time_since_epoch()
+            ).count();
+        return seconds;
+    }
+    
+    bool EXPIRE(const string& key, long long expireTime) {
+        RemoveIfExpired(key);
+        auto it = key_value.find(key);
+        if(it == key_value.end()) return false;
+        long long seconds = CurrentTime();
+        expiry[key] = seconds + expireTime;
+        return true;
+    }
+    
+    bool RemoveIfExpired(const string& key) {
+        auto it = expiry.find(key);
+        if(it == expiry.end()) return false;
+        long long seconds = CurrentTime();
+        if(it->second > seconds) return false;
+        expiry.erase(it);
+        key_value.erase(key);
+        return true;
+    }
+    
+    long long TTL(const string& key) {
+        RemoveIfExpired(key);
+        auto valueIt = key_value.find(key); 
+        if(valueIt == key_value.end()) return -1;
+        auto expiryIt = expiry.find(key); 
+        if(expiryIt == expiry.end()) return -1;
+        long long seconds = CurrentTime();
+        return expiryIt->second - seconds;
     }
 };
 
@@ -230,14 +291,38 @@ int main() {
                 cout << "OK" << endl;
             }
         }
+        else if(command == "EXPIRE") {
+            long long seconds;
+            if(!(ss >> key >> seconds)) {
+                cout << "Usage: EXPIRE <key> <seconds>\n";
+                continue;
+            }
+            if(seconds <= 0) {
+                cout << "Error: Expiration time must be positive\n";
+                continue;
+            }
+            if(db.EXPIRE(key, seconds))
+                cout << "OK" << endl;
+            else
+                cout << "Error: Key Not Found" << endl;
+        }
+        else if(command == "TTL") {
+            if(!(ss >> key)) {
+                cout << "Usage: TTL <key>\n";
+                continue;
+            }
+            long long ttl = db.TTL(key);
+            if(ttl == -1)
+                cout << "Error: Key Not Found or No Expiration Set" << endl;
+            else
+                cout << ttl << endl;
+        }
         else if(command == "SAVE" || command == "LOAD") {
             ss >> key;
-
             if(key.empty()) {
                 cout << "Usage: " << command << " <filename>\n";
                 continue;
             }
-            
             if(command == "SAVE") {
                 if(db.SAVE(key)) cout<<"Database saved successfully."<<endl;
                 else cout<<"Error: Unable to save database."<<endl;
@@ -265,20 +350,22 @@ int main() {
             }
             else if(command == "HELP") {
                 cout << "\nAvailable Commands:\n";
-                cout << "  SET <key> <value>    - Store a key-value pair\n";
-                cout << "  GET <key>            - Retrieve the value of a key\n";
-                cout << "  DEL <key>            - Delete a key\n";
-                cout << "  EXISTS <key>         - Check if a key exists\n";
-                cout << "  KEYS                 - Display all keys\n";
-                cout << "  SIZE                 - Display the number of keys\n";
-                cout << "  HELP                 - Show this help message\n";
-                cout << "  EXIT                 - Exit Redis Lite\n";
-                cout << "  SAVE <filename>      - Save database to a file\n";
-                cout << "  LOAD <filename>      - Load database from a file\n";
-                cout << "  INCR <key>           - Increment the integer value of a key\n";
-                cout << "  DECR <key>           - Decrement the integer value of a key\n";
-                cout << "  MSET <k1> <v1> ...  - Store multiple key-value pairs\n";
-                cout << "  MGET <k1> <k2> ...  - Retrieve multiple values\n";
+                cout << "  SET <key> <value>      - Store a key-value pair\n";
+                cout << "  GET <key>              - Retrieve the value of a key\n";
+                cout << "  DEL <key>              - Delete a key\n";
+                cout << "  EXISTS <key>           - Check if a key exists\n";
+                cout << "  KEYS                   - Display all keys\n";
+                cout << "  SIZE                   - Display the number of keys\n";
+                cout << "  HELP                   - Show this help message\n";
+                cout << "  EXIT                   - Exit Redis Lite\n";
+                cout << "  SAVE <filename>        - Save database to a file\n";
+                cout << "  LOAD <filename>        - Load database from a file\n";
+                cout << "  INCR <key>             - Increment the integer value of a key\n";
+                cout << "  DECR <key>             - Decrement the integer value of a key\n";
+                cout << "  MSET <k1> <v1> ...     - Store multiple key-value pairs\n";
+                cout << "  MGET <k1> <k2> ...     - Retrieve multiple values\n";
+                cout << "  EXPIRE <key> <seconds> - Set an expiration time (in seconds) for a key\n";
+                cout << "  TTL <key>              - Show remaining time to live for a key\n";
             }
             else if(command == "EXIT") {
                 running = false;
