@@ -6,9 +6,14 @@ A Redis-inspired in-memory key-value store built in C++ that supports basic data
 
 ## Demo
 
-### Interactive CLI
+### Core Operations
+![Core Operations](screenshots/demo1.png)
 
-![Redis Lite Demo](screenshots/demo.png)
+### Batch & Numeric Operations
+![Batch & Numeric Operations](screenshots/demo2.png)
+
+### Expiration & Persistence
+![Expiration & Persistence](screenshots/demo3.png)
 
 ---
 
