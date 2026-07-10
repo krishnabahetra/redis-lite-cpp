@@ -12,14 +12,51 @@ class RedisLite{
     private:
     unordered_map<string,string> key_value;
     unordered_map<string, long long> expiry;
+
     public:
     RedisLite() = default;
+
+    long long CurrentTime() const {
+        auto now = chrono::system_clock::now();
+        long long seconds = chrono::duration_cast<chrono::seconds>(now.time_since_epoch()).count();
+        return seconds;
+    }
 
     void SET(const string& key, const string& value) {
         key_value[key] = value;
         expiry.erase(key);
     }
-    
+
+    bool LOAD(const string& filename) {
+        ifstream file(filename);
+        if(!file) {
+            return false;
+        }
+        key_value.clear();
+        expiry.clear();
+        string line;
+        while(getline(file,line)) {
+            size_t pos = line.find(':');
+            if(pos == string::npos) {
+                continue;
+            }
+            string key = line.substr(0,pos);
+            string value = line.substr(pos+1);
+            key_value[key] = value;
+        }
+        return true;
+    }
+
+    bool RemoveIfExpired(const string& key) {
+        auto it = expiry.find(key);
+        if(it == expiry.end()) return false;
+        long long seconds = CurrentTime();
+        if(it->second > seconds) return false;
+        expiry.erase(it);
+        key_value.erase(key);
+        return true;
+    }
+
     void CleanupExpiredKeys() {
         vector<string> keys;
         for (const auto& it : key_value) {
@@ -65,7 +102,7 @@ class RedisLite{
         CleanupExpiredKeys();
         return key_value.size();
     }
-    
+
     bool SAVE(const string& filename) {
         CleanupExpiredKeys();
         ofstream file(filename);
@@ -77,25 +114,7 @@ class RedisLite{
         }
         return true;
     }
-    bool LOAD(const string& filename) {
-        ifstream file(filename);
-        if(!file) {
-            return false;
-        }
-        key_value.clear();
-        expiry.clear();
-        string line;
-        while(getline(file,line)) {
-            size_t pos = line.find(':');
-            if(pos == string::npos) {
-                continue;
-            }
-            string key = line.substr(0,pos);
-            string value = line.substr(pos+1);
-            key_value[key] = value;
-        }
-        return true;
-    }
+
     bool ChangeBy(const string& key, long long delta, long long& newValue) {
         RemoveIfExpired(key);
         auto it = key_value.find(key); 
@@ -123,26 +142,26 @@ class RedisLite{
             return false;
         }
     }
+
     bool INCR(const string& key, long long& newValue) {
         return ChangeBy(key, 1, newValue);
     }
-    
+
     bool DECR(const string& key, long long& newValue) {
         return ChangeBy(key, -1, newValue);
     }
-    
+
     void MSET(const vector<pair<string, string>>& pairs) {
         for (const auto& [key, value] : pairs) {
             SET(key,value);
         }
     }
-    
+
     vector<string> MGET(const vector<string>& keys) {
         vector<string> values;
         for (const auto& key : keys) {
             RemoveIfExpired(key);
             auto it = key_value.find(key);
-    
             if (it != key_value.end())
                 values.push_back(it->second);
             else
@@ -150,16 +169,7 @@ class RedisLite{
         }
         return values;
     }
-    
-    long long CurrentTime() const {
-        auto now = chrono::system_clock::now();
-        long long seconds =
-            chrono::duration_cast<chrono::seconds>(
-                now.time_since_epoch()
-            ).count();
-        return seconds;
-    }
-    
+
     bool EXPIRE(const string& key, long long expireTime) {
         RemoveIfExpired(key);
         auto it = key_value.find(key);
@@ -168,17 +178,7 @@ class RedisLite{
         expiry[key] = seconds + expireTime;
         return true;
     }
-    
-    bool RemoveIfExpired(const string& key) {
-        auto it = expiry.find(key);
-        if(it == expiry.end()) return false;
-        long long seconds = CurrentTime();
-        if(it->second > seconds) return false;
-        expiry.erase(it);
-        key_value.erase(key);
-        return true;
-    }
-    
+
     long long TTL(const string& key) {
         RemoveIfExpired(key);
         auto valueIt = key_value.find(key); 
@@ -195,43 +195,32 @@ int main() {
     cout << "Welcome to Redis Lite\n";
     cout << "Type HELP to see available commands.\n";
     bool running = true;
-
     while(running) {
         string input;
         cout << "> ";
         getline(cin,input);
-
         stringstream ss(input);
         string command, key, value;
-
         ss >> command;
         if(command.empty()) continue;
-
         transform(command.begin(), command.end(), command.begin(), ::toupper);
-
         if(command == "SET") {
             ss >> key;
             getline(ss, value);
-
             if(!value.empty() && value[0] == ' ') value.erase(0,1);
-
             if(key.empty() || value.empty()) {
                 cout << "Usage: " << command << " <key> <value>\n";
                 continue;
             }
-
             db.SET(key,value);
             cout << "OK" << endl;
         }
-        else if(command == "GET" || command == "DEL" || command == "EXISTS" ||
-        command == "INCR" || command == "DECR") {
+        else if(command == "GET" || command == "DEL" || command == "EXISTS" || command == "INCR" || command == "DECR") {
             ss >> key;
-        
             if(key.empty()) {
                 cout << "Usage: " << command << " <key>\n";
                 continue;
             }
-        
             if(command == "GET") {
                 cout << db.GET(key) << endl;
             }
@@ -338,7 +327,6 @@ int main() {
             }
             else if(command == "KEYS") {
                 vector<string> keys = db.KEYS();
-
                 if(keys.empty()) {
                     cout << "No Keys Found" << endl;
                 }
@@ -375,6 +363,5 @@ int main() {
             }
         }
     }
-
     return 0;
 }
